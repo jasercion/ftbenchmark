@@ -371,19 +371,19 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
     });
 
     // 6. make4FGLxml - Create source model (requires LATSourceModel package)
-    try commands.append(.{
-        .name = "python scripts/make4FGLxml - Create source model",
-        .command = try fmt.allocPrint(allocator,
-            \\make4FGLxml {s} --event_file {s} \
-            \\  --output_name {s} \
-            \\  --free_radius 5.0 --norms_free_only True \
-            \\  --sigma_to_free 25 --variable_free True
-        , .{
-            catalog_path,
-            config.gti_file,
-            config.input_model,
-        }),
-    });
+    // try commands.append(.{
+    //     .name = "python scripts/make4FGLxml - Create source model",
+    //     .command = try fmt.allocPrint(allocator,
+    //         \\make4FGLxml {s} --event_file {s} \
+    //         \\  --output_name {s} \
+    //         \\  --free_radius 5.0 --norms_free_only True \
+    //         \\  --sigma_to_free 25 --variable_free True
+    //     , .{
+    //         catalog_path,
+    //         config.gti_file,
+    //         config.input_model,
+    //     }),
+    // });
 
     // 7. gtltcube - Compute livetime cube
     try commands.append(.{
