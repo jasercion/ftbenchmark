@@ -9,6 +9,7 @@ const time = std.time;
 const mem = std.mem;
 const io = std.io;
 const fmt = std.fmt;
+const http = std.http;
 
 /// Represents the result of a single command execution
 const CommandResult = struct {
@@ -28,6 +29,7 @@ const Config = struct {
     data_path: []const u8 = ".",
 
     // Data file names
+    data_url: []const u8 = "https://fermi.gsfc.nasa.gov/ssc/data/analysis/scitools/data/BinnedLikelihood/",
     spacecraft_file: []const u8 = "L181126210218F4F0ED2738_SC00.fits",
     events_list: []const u8 = "binned_events.txt",
     filtered_file: []const u8 = "3C279_binned_filtered.fits",
@@ -128,6 +130,9 @@ pub fn main() !void {
     };
     _ = &config;
 
+    // Download missing data files
+    try downloadMissingDataFiles(&config, allocator);
+
     var results = std.ArrayList(CommandResult).init(allocator);
     defer results.deinit();
 
@@ -149,8 +154,11 @@ pub fn main() !void {
         \\
     , .{
         config.data_path,
-        config.ra, config.dec, config.radius,
-        config.emin, config.emax,
+        config.ra,
+        config.dec,
+        config.radius,
+        config.emin,
+        config.emax,
         config.irfs,
         output_file,
         dry_run,
@@ -547,6 +555,70 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
     };
 }
 
+/// Download missing data files function and http requester
+fn downloadMissingDataFiles(config: *Config, allocator: mem.Allocator) !void {
+    const data_files = [_][]const u8{ config.spacecraft_file, config.input_model, config.catalog_file };
+
+    for (data_files) |filename| {
+        const local_path = try config.getDataPath(allocator, filename);
+        defer allocator.free(local_path);
+
+        const file_exists = blk: {
+            fs.cwd().access(local_path, .{}) catch |err| {
+                if (err == error.FileNotFound) {
+                    break :blk false;
+                }
+                return err;
+            };
+            break :blk true;
+        };
+
+        if (!file_exists) {
+            std.debug.print("Downloading missing file: {s}\n", .{filename});
+
+            const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ config.data_url, filename });
+            defer allocator.free(url);
+
+            try downloadFile(allocator, url, local_path);
+
+            std.debug.print("Successfully downloaded: {s}\n", .{filename});
+        } else {
+            std.debug.print("File exists {s}\n", .{filename});
+        }
+    }
+}
+
+fn downloadFile(allocator: mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+    var client = http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(url);
+
+    var server_header_buffer: [16 * 1024]u8 = undefined;
+
+    var req = try client.open(.GET, uri, .{ .server_header_buffer = &server_header_buffer });
+    defer req.deinit();
+
+    try req.send();
+    try req.wait();
+
+    if (req.response.status != .ok) {
+        std.debug.print("HTTP Error: {}\n", .{req.response.status});
+        return error.HttpRequestFailed;
+    }
+
+    const file = try fs.cwd().createFile(dest_path, .{});
+    defer file.close();
+
+    var buffer: [8192]u8 = undefined;
+    var reader = req.reader();
+    while (true) {
+        const bytes_read = try reader.read(&buffer);
+        if (bytes_read == 0) break;
+        try file.writeAll(buffer[0..bytes_read]);
+    }
+}
+
 /// Create a dry-run result (no actual execution)
 fn createDryRunResult(name: []const u8, command: []const u8) CommandResult {
     return CommandResult{
@@ -599,9 +671,11 @@ fn writeResults(
         \\
     , .{
         config.data_path,
-        config.ra, config.dec,
+        config.ra,
+        config.dec,
         config.radius,
-        config.emin, config.emax,
+        config.emin,
+        config.emax,
         config.irfs,
         config.evclass,
         config.evtype,
