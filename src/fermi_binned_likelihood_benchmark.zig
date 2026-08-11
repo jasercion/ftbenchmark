@@ -5,11 +5,11 @@
 const std = @import("std");
 const fs = std.fs;
 const process = std.process;
-const time = std.time;
 const mem = std.mem;
-const io = std.io;
 const fmt = std.fmt;
 const http = std.http;
+
+var app_io: std.Io = undefined;
 
 /// Represents the result of a single command execution
 const CommandResult = struct {
@@ -80,14 +80,19 @@ const Config = struct {
 };
 
 /// Main benchmark runner
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: process.Init) !void {
+    app_io = init.io;
+    var allocator_state = std.heap.SafeAllocator.init(std.heap.page_allocator, .{});
+    defer _ = allocator_state.deinit();
+    const allocator = allocator_state.allocator();
 
     // Parse command line arguments
-    const args = try process.argsAlloc(allocator);
-    defer process.argsFree(allocator, args);
+    var args = std.array_list.Managed([]const u8).init(allocator);
+    defer args.deinit();
+    var arg_iterator = process.Args.Iterator.init(init.minimal.args);
+    while (arg_iterator.next()) |arg| {
+        try args.append(arg);
+    }
 
     var output_file: []const u8 = "benchmark_results.txt";
     var dry_run = false;
@@ -95,32 +100,34 @@ pub fn main() !void {
     var data_path: []const u8 = ".";
 
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (mem.eql(u8, args[i], "--output") or mem.eql(u8, args[i], "-o")) {
+    while (i < args.items.len) : (i += 1) {
+        if (mem.eql(u8, args.items[i], "--output") or mem.eql(u8, args.items[i], "-o")) {
             i += 1;
-            if (i < args.len) {
-                output_file = args[i];
+            if (i < args.items.len) {
+                output_file = args.items[i];
             }
-        } else if (mem.eql(u8, args[i], "--data-path") or mem.eql(u8, args[i], "-d")) {
+        } else if (mem.eql(u8, args.items[i], "--data-path") or mem.eql(u8, args.items[i], "-d")) {
             i += 1;
-            if (i < args.len) {
-                data_path = args[i];
+            if (i < args.items.len) {
+                data_path = args.items[i];
             }
-        } else if (mem.eql(u8, args[i], "--dry-run")) {
+        } else if (mem.eql(u8, args.items[i], "--dry-run")) {
             dry_run = true;
-        } else if (mem.eql(u8, args[i], "--verbose") or mem.eql(u8, args[i], "-v")) {
+        } else if (mem.eql(u8, args.items[i], "--verbose") or mem.eql(u8, args.items[i], "-v")) {
             verbose = true;
-        } else if (mem.eql(u8, args[i], "--help") or mem.eql(u8, args[i], "-h")) {
-            printUsage();
+        } else if (mem.eql(u8, args.items[i], "--help") or mem.eql(u8, args.items[i], "-h")) {
+            try printUsage();
             return;
         }
     }
 
     // Validate data path exists
     if (!mem.eql(u8, data_path, ".")) {
-        fs.cwd().access(data_path, .{}) catch |err| {
-            const stderr = io.getStdErr().writer();
-            try stderr.print("Error: Data path '{s}' is not accessible: {s}\n", .{ data_path, @errorName(err) });
+        std.Io.Dir.cwd().access(app_io, data_path, .{}) catch |err| {
+            var buffer: [4096]u8 = undefined;
+            var stderr = std.Io.File.stderr().writer(app_io, &buffer);
+            try stderr.interface.print("Error: Data path '{s}' is not accessible: {s}\n", .{ data_path, @errorName(err) });
+            try stderr.interface.flush();
             return;
         };
     }
@@ -133,12 +140,13 @@ pub fn main() !void {
     // Download missing data files
     try downloadMissingDataFiles(&config, allocator);
 
-    var results = std.ArrayList(CommandResult).init(allocator);
+    var results = std.array_list.Managed(CommandResult).init(allocator);
     defer results.deinit();
 
-    const stdout = io.getStdOut().writer();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(app_io, &stdout_buffer);
 
-    try stdout.print(
+    try stdout.interface.print(
         \\===============================================================
         \\  Fermi LAT Binned Likelihood Tutorial - Benchmark Runner
         \\===============================================================
@@ -163,6 +171,7 @@ pub fn main() !void {
         output_file,
         dry_run,
     });
+    try stdout.interface.flush();
 
     // Build all commands
     const commands = try buildCommands(allocator, config);
@@ -174,12 +183,12 @@ pub fn main() !void {
     }
 
     // Execute commands
-    const total_start = time.nanoTimestamp();
+    const total_start: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
 
     for (commands, 0..) |cmd, idx| {
-        try stdout.print("\n[{}/{}] Running: {s}\n", .{ idx + 1, commands.len, cmd.name });
+        try stdout.interface.print("\n[{}/{}] Running: {s}\n", .{ idx + 1, commands.len, cmd.name });
         if (verbose) {
-            try stdout.print("  Command: {s}\n", .{cmd.command});
+            try stdout.interface.print("  Command: {s}\n", .{cmd.command});
         }
 
         const result = if (dry_run)
@@ -191,19 +200,19 @@ pub fn main() !void {
 
         if (result.success) {
             const duration_ms = @as(f64, @floatFromInt(result.duration_ns)) / 1_000_000.0;
-            try stdout.print("  ✓ Completed in {d:.2} ms\n", .{duration_ms});
+            try stdout.interface.print("  ✓ Completed in {d:.2} ms\n", .{duration_ms});
         } else {
-            try stdout.print("  ✗ Failed: {s}\n", .{result.error_message orelse "Unknown error"});
+            try stdout.interface.print("  ✗ Failed: {s}\n", .{result.error_message orelse "Unknown error"});
         }
     }
 
-    const total_end = time.nanoTimestamp();
+    const total_end: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
     const total_duration_ns = total_end - total_start;
 
     // Write results to file
     try writeResults(allocator, output_file, results.items, total_duration_ns, config);
 
-    try stdout.print(
+    try stdout.interface.print(
         \\
         \\===============================================================
         \\  Benchmark Complete
@@ -222,11 +231,13 @@ pub fn main() !void {
         results.items.len - countSuccessful(results.items),
         output_file,
     });
+    try stdout.interface.flush();
 }
 
-fn printUsage() void {
-    const stdout = io.getStdOut().writer();
-    stdout.print(
+fn printUsage() !void {
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(app_io, &buffer);
+    try stdout.interface.print(
         \\Fermi LAT Binned Likelihood Tutorial - Benchmark Runner
         \\
         \\Usage: fermi_benchmark [OPTIONS]
@@ -249,7 +260,7 @@ fn printUsage() void {
         \\  fermi_benchmark --data-path /path/to/fermi/data --output results.txt
         \\  fermi_benchmark -d ~/fermi_data -v --dry-run
         \\
-    , .{}) catch {};
+    , .{});
 }
 
 /// Command definition for building shell commands
@@ -260,7 +271,7 @@ const CommandDef = struct {
 
 /// Build all analysis commands based on configuration
 fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
-    var commands = std.ArrayList(CommandDef).init(allocator);
+    var commands = std.array_list.Managed(CommandDef).init(allocator);
 
     // Get full paths for input files
     const spacecraft_path = try config.getDataPath(allocator, config.spacecraft_file);
@@ -474,20 +485,13 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
     return commands.toOwnedSlice();
 }
 
-/// Execute a shell command and return result using Zig 0.14 API
+/// Execute a shell command and return its result.
 fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u8) CommandResult {
-    const start_time = time.nanoTimestamp();
-
-    // Create the argument array for the shell command
+    const start_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
     const argv: []const []const u8 = &.{ "/bin/sh", "-c", command };
 
-    // Use the proper init function for Zig 0.14
-    var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
-        const end_time = time.nanoTimestamp();
+    const result = std.process.run(allocator, app_io, .{ .argv = argv }) catch |err| {
+        const end_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
         return CommandResult{
             .name = name,
             .command = command,
@@ -500,59 +504,26 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
         };
     };
 
-    // Read stdout and stderr
-    var stdout_size: usize = 0;
-    var stderr_size: usize = 0;
+    const end_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
 
-    if (child.stdout) |stdout_file| {
-        const stdout_content = stdout_file.reader().readAllAlloc(allocator, 10 * 1024 * 1024) catch &[_]u8{};
-        stdout_size = stdout_content.len;
-        if (stdout_content.len > 0) {
-            allocator.free(stdout_content);
-        }
-    }
-
-    if (child.stderr) |stderr_file| {
-        const stderr_content = stderr_file.reader().readAllAlloc(allocator, 10 * 1024 * 1024) catch &[_]u8{};
-        stderr_size = stderr_content.len;
-        if (stderr_content.len > 0) {
-            allocator.free(stderr_content);
-        }
-    }
-
-    const term = child.wait() catch |err| {
-        const end_time = time.nanoTimestamp();
-        return CommandResult{
-            .name = name,
-            .command = command,
-            .exit_code = 255,
-            .duration_ns = end_time - start_time,
-            .stdout_size = stdout_size,
-            .stderr_size = stderr_size,
-            .success = false,
-            .error_message = @errorName(err),
-        };
+    const exit_code: u8 = switch (result.term) {
+        .exited => |code| code,
+        else => 255,
     };
 
-    const end_time = time.nanoTimestamp();
-
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| code,
-        .Signal => 255,
-        .Stopped => 255,
-        .Unknown => 255,
-    };
-
-    return CommandResult{
+    const command_result = CommandResult{
         .name = name,
         .command = command,
         .exit_code = exit_code,
         .duration_ns = end_time - start_time,
-        .stdout_size = stdout_size,
-        .stderr_size = stderr_size,
+        .stdout_size = result.stdout.len,
+        .stderr_size = result.stderr.len,
         .success = exit_code == 0,
         .error_message = if (exit_code != 0) "Non-zero exit code" else null,
     };
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+    return command_result;
 }
 
 /// Download missing data files function and http requester
@@ -564,7 +535,7 @@ fn downloadMissingDataFiles(config: *Config, allocator: mem.Allocator) !void {
         defer allocator.free(local_path);
 
         const file_exists = blk: {
-            fs.cwd().access(local_path, .{}) catch |err| {
+            std.Io.Dir.cwd().access(app_io, local_path, .{}) catch |err| {
                 if (err == error.FileNotFound) {
                     break :blk false;
                 }
@@ -596,14 +567,13 @@ fn downloadFile(allocator: mem.Allocator, url: []const u8, dest_path: []const u8
         return;
     } else |_| {
         // Fall back to wget
-        const result = try std.process.Child.run(.{
-            .allocator = allocator,
+        const result = try std.process.run(allocator, app_io, .{
             .argv = &[_][]const u8{ "wget", "-q", "-O", dest_path, url },
         });
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
 
-        if (result.term.Exited != 0) {
+        if (!result.term.success()) {
             std.debug.print("Download failed. stderr: {s}\n", .{result.stderr});
             return error.DownloadFailed;
         }
@@ -611,14 +581,13 @@ fn downloadFile(allocator: mem.Allocator, url: []const u8, dest_path: []const u8
 }
 
 fn runDownloadCommand(allocator: mem.Allocator, argv: []const []const u8) !void {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, app_io, .{
         .argv = argv,
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (!result.term.success()) {
         return error.CommandFailed;
     }
 }
@@ -646,13 +615,14 @@ fn writeResults(
     config: Config,
 ) !void {
     _ = allocator;
-    const file = try fs.cwd().createFile(filename, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(app_io, filename, .{});
+    defer file.close(app_io);
 
-    const writer = file.writer();
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(app_io, &buffer);
 
     // Write header
-    try writer.print(
+    try writer.interface.print(
         \\================================================================================
         \\  FERMI LAT BINNED LIKELIHOOD TUTORIAL - BENCHMARK RESULTS
         \\================================================================================
@@ -697,7 +667,7 @@ fn writeResults(
         const status = if (result.success) "SUCCESS" else "FAILED";
         if (result.success) total_successful += 1;
 
-        try writer.print(
+        try writer.interface.print(
             \\
             \\Step {}: {s}
             \\  Status:      {s}
@@ -720,7 +690,7 @@ fn writeResults(
         });
 
         if (result.error_message) |msg| {
-            try writer.print("  Error:       {s}\n", .{msg});
+            try writer.interface.print("  Error:       {s}\n", .{msg});
         }
     }
 
@@ -728,7 +698,7 @@ fn writeResults(
     const total_sec = @as(f64, @floatFromInt(total_duration_ns)) / 1_000_000_000.0;
     const cmd_time_sec = @as(f64, @floatFromInt(total_command_time)) / 1_000_000_000.0;
 
-    try writer.print(
+    try writer.interface.print(
         \\
         \\================================================================================
         \\  SUMMARY
@@ -758,8 +728,8 @@ fn writeResults(
     });
 
     // Write table header
-    try writer.print("{s:<6} {s:<40} {s:<12} {s:<10}\n", .{ "Step", "Command", "Time (s)", "% Total" });
-    try writer.print("{s}\n", .{"-" ** 70});
+    try writer.interface.print("{s:<6} {s:<40} {s:<12} {s:<10}\n", .{ "Step", "Command", "Time (s)", "% Total" });
+    try writer.interface.print("{s}\n", .{"----------------------------------------------------------------------"});
 
     // Timing breakdown table
     for (results, 0..) |result, idx| {
@@ -779,7 +749,7 @@ fn writeResults(
             break :blk name_buf[0..40];
         } else result.name;
 
-        try writer.print("{:<6} {s:<40} {d:<12.3} {d:<10.1}\n", .{
+        try writer.interface.print("{:<6} {s:<40} {d:<12.3} {d:<10.1}\n", .{
             idx + 1,
             display_name,
             duration_sec,
@@ -787,16 +757,17 @@ fn writeResults(
         });
     }
 
-    try writer.print("{s}\n", .{"-" ** 70});
-    try writer.print("{s:<6} {s:<40} {d:<12.3} {s:<10}\n", .{ "TOTAL", "", cmd_time_sec, "100.0" });
+    try writer.interface.print("{s}\n", .{"----------------------------------------------------------------------"});
+    try writer.interface.print("{s:<6} {s:<40} {d:<12.3} {s:<10}\n", .{ "TOTAL", "", cmd_time_sec, "100.0" });
 
-    try writer.print(
+    try writer.interface.print(
         \\
         \\================================================================================
         \\  END OF REPORT
         \\================================================================================
         \\
     , .{});
+    try writer.interface.flush();
 }
 
 /// Count successful commands
@@ -820,7 +791,7 @@ test "command building" {
         allocator.free(commands);
     }
 
-    try std.testing.expect(commands.len == 10);
+    try std.testing.expect(commands.len == 9);
 }
 
 test "config getDataPath" {

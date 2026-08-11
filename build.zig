@@ -15,12 +15,16 @@ pub fn build(b: *std.Build) void {
     });
 
     // Main executable
-    const exe = b.addExecutable(.{
-        .name = "fermi_benchmark",
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = false,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "fermi_benchmark",
+        .root_module = root_module,
     });
 
     // Install the executable
@@ -29,11 +33,6 @@ pub fn build(b: *std.Build) void {
     // Create a run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-
-    // Allow passing arguments to the application
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
 
     // Create the "run" step
     const run_step = b.step("run", "Run the Fermi benchmark tool");
@@ -56,10 +55,14 @@ pub fn build(b: *std.Build) void {
     verbose_step.dependOn(&verbose_cmd.step);
 
     // Unit tests
-    const unit_tests = b.addTest(.{
+    const test_module = b.createModule(.{
         .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const unit_tests = b.addTest(.{
+        .root_module = test_module,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -68,11 +71,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 
     // Documentation generation
-    const docs = b.addStaticLibrary(.{
-        .name = "fermi_benchmark_docs",
+    const docs_module = b.createModule(.{
         .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const docs = b.addLibrary(.{
+        .name = "fermi_benchmark_docs",
+        .root_module = docs_module,
+        .linkage = .static,
     });
 
     const install_docs = b.addInstallDirectory(.{
@@ -84,17 +92,16 @@ pub fn build(b: *std.Build) void {
     const docs_step = b.step("docs", "Generate documentation");
     docs_step.dependOn(&install_docs.step);
 
-    // Clean step (removes zig-out and zig-cache)
-    const clean_step = b.step("clean", "Remove build artifacts");
-    clean_step.dependOn(&b.addRemoveDirTree(b.path("zig-out")).step);
-    clean_step.dependOn(&b.addRemoveDirTree(b.path(".zig-cache")).step);
-
     // Check step (compile without producing output - useful for CI)
-    const check = b.addExecutable(.{
-        .name = "fermi_benchmark",
+    const check_module = b.createModule(.{
         .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const check = b.addExecutable(.{
+        .name = "fermi_benchmark",
+        .root_module = check_module,
     });
 
     const check_step = b.step("check", "Check if the code compiles");
@@ -103,8 +110,8 @@ pub fn build(b: *std.Build) void {
     // Add format check step
     const fmt = b.addFmt(.{
         .paths = &.{
-            "src/fermi_binned_likelihood_benchmark.zig",
-            "build.zig",
+            b.path("src/fermi_binned_likelihood_benchmark.zig"),
+            b.path("build.zig"),
         },
         .check = true,
     });
@@ -115,8 +122,8 @@ pub fn build(b: *std.Build) void {
     // Add format fix step
     const fmt_fix = b.addFmt(.{
         .paths = &.{
-            "src/fermi_binned_likelihood_benchmark.zig",
-            "build.zig",
+            b.path("src/fermi_binned_likelihood_benchmark.zig"),
+            b.path("build.zig"),
         },
         .check = false,
     });
