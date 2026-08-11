@@ -372,7 +372,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 
     // 6. make4FGLxml - Create source model (requires LATSourceModel package)
     try commands.append(.{
-        .name = "make4FGLxml - Create source model",
+        .name = "python scripts/make4FGLxml - Create source model",
         .command = try fmt.allocPrint(allocator,
             \\make4FGLxml {s} --event_file {s} \
             \\  --output_name {s} \
