@@ -19,6 +19,7 @@ const CommandResult = struct {
     duration_ns: i128,
     stdout_size: usize,
     stderr_size: usize,
+    peak_rss_kb: ?u64,
     success: bool,
     error_message: ?[]const u8,
 };
@@ -203,6 +204,11 @@ pub fn main(init: process.Init) !void {
             try stdout.interface.print("  ✓ Completed in {d:.2} ms\n", .{duration_ms});
         } else {
             try stdout.interface.print("  ✗ Failed: {s}\n", .{result.error_message orelse "Unknown error"});
+        }
+        if (result.peak_rss_kb) |rss_kb| {
+            try stdout.interface.print("  Peak memory: {} KiB ({d:.2} MiB)\n", .{ rss_kb, @as(f64, @floatFromInt(rss_kb)) / 1024.0 });
+        } else {
+            try stdout.interface.print("  Peak memory: unavailable\n", .{});
         }
     }
 
@@ -488,7 +494,14 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 /// Execute a shell command and return its result.
 fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u8) CommandResult {
     const start_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
-    const argv: []const []const u8 = &.{ "/bin/sh", "-c", command };
+    const argv: []const []const u8 = &.{
+        "/usr/bin/time",
+        "-f",
+        "\n__FTBENCH_MAX_RSS_KB__=%M",
+        "/bin/sh",
+        "-c",
+        command,
+    };
 
     const result = std.process.run(allocator, app_io, .{ .argv = argv }) catch |err| {
         const end_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
@@ -499,6 +512,7 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
             .duration_ns = end_time - start_time,
             .stdout_size = 0,
             .stderr_size = 0,
+            .peak_rss_kb = null,
             .success = false,
             .error_message = @errorName(err),
         };
@@ -511,13 +525,27 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
         else => 255,
     };
 
+    const memory_marker = "__FTBENCH_MAX_RSS_KB__=";
+    const marker_start = mem.lastIndexOf(u8, result.stderr, memory_marker);
+    const peak_rss_kb = if (marker_start) |start| blk: {
+        const value_start = start + memory_marker.len;
+        const value_end = mem.indexOfScalarPos(u8, result.stderr, value_start, '\n') orelse result.stderr.len;
+        break :blk fmt.parseInt(u64, result.stderr[value_start..value_end], 10) catch null;
+    } else null;
+    const stderr_size = if (marker_start) |start| blk: {
+        const content_start = if (start > 0 and result.stderr[start - 1] == '\n') start - 1 else start;
+        const marker_end = mem.indexOfScalarPos(u8, result.stderr, content_start, '\n') orelse result.stderr.len;
+        break :blk result.stderr.len - (marker_end - content_start);
+    } else result.stderr.len;
+
     const command_result = CommandResult{
         .name = name,
         .command = command,
         .exit_code = exit_code,
         .duration_ns = end_time - start_time,
         .stdout_size = result.stdout.len,
-        .stderr_size = result.stderr.len,
+        .stderr_size = stderr_size,
+        .peak_rss_kb = peak_rss_kb,
         .success = exit_code == 0,
         .error_message = if (exit_code != 0) "Non-zero exit code" else null,
     };
@@ -601,6 +629,7 @@ fn createDryRunResult(name: []const u8, command: []const u8) CommandResult {
         .duration_ns = 0,
         .stdout_size = 0,
         .stderr_size = 0,
+        .peak_rss_kb = null,
         .success = true,
         .error_message = null,
     };
@@ -688,6 +717,12 @@ fn writeResults(
             result.stderr_size,
             result.command,
         });
+
+        if (result.peak_rss_kb) |rss_kb| {
+            try writer.interface.print("  Peak Memory: {} KiB ({d:.2} MiB)\n", .{ rss_kb, @as(f64, @floatFromInt(rss_kb)) / 1024.0 });
+        } else {
+            try writer.interface.print("  Peak Memory: unavailable\n", .{});
+        }
 
         if (result.error_message) |msg| {
             try writer.interface.print("  Error:       {s}\n", .{msg});
