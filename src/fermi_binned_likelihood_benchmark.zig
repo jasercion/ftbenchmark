@@ -588,36 +588,6 @@ fn downloadMissingDataFiles(config: *Config, allocator: mem.Allocator) !void {
     }
 }
 
-//fn downloadFile(allocator: mem.Allocator, url: []const u8, dest_path: []const u8) !void {
-//     var client = http.Client{ .allocator = allocator };
-//     defer client.deinit();
-
-//     const uri = try std.Uri.parse(url);
-
-//     var server_header_buffer: [16 * 1024]u8 = undefined;
-
-//     var req = try client.open(.GET, uri, .{ .server_header_buffer = &server_header_buffer });
-//     defer req.deinit();
-
-//     try req.send();
-//     try req.wait();
-
-//     if (req.response.status != .ok) {
-//         std.debug.print("HTTP Error: {}\n", .{req.response.status});
-//         return error.HttpRequestFailed;
-//     }
-
-//     const file = try fs.cwd().createFile(dest_path, .{});
-//     defer file.close();
-
-//     var buffer: [8192]u8 = undefined;
-//     var reader = req.reader();
-//     while (true) {
-//         const bytes_read = try reader.read(&buffer);
-//         if (bytes_read == 0) break;
-//         try file.writeAll(buffer[0..bytes_read]);
-//     }
-// }
 fn downloadFile(allocator: mem.Allocator, url: []const u8, dest_path: []const u8) !void {
     std.debug.print("Downloading: {s}\n", .{url});
 
