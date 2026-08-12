@@ -15,6 +15,6 @@ Download and unpack the tagged release tarball appropriate for your system archi
 `fermi_benchmark -d <path to data directory> -o <name of output file`
 
 ### Options
--d - Path to the top level input data directory
--o - Name of output file containing benchmarking statistics
---dry-run - Run the benchmarks without executing the commands
+- -d - Path to the top level input data directory
+- -o - Name of output file containing benchmarking statistics
+- --dry-run - Run the benchmarks without executing the commands
