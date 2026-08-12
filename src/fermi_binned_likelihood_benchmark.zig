@@ -41,7 +41,7 @@ const Config = struct {
     ltcube_file: []const u8 = "3C279_binned_ltcube.fits",
     expcube_file: []const u8 = "3C279_binned_allsky_expcube.fits",
     srcmaps_file: []const u8 = "3C279_binned_srcmaps.fits",
-    input_model: []const u8 = "3C279_input_model.xml",
+    input_model: []const u8 = "data/3C279_input_model.xml",
     output_model: []const u8 = "3C279_binned_output.xml",
     catalog_file: []const u8 = "gll_psc_v32.xml",
 
