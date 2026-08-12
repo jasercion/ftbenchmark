@@ -1,7 +1,7 @@
 # ftbenchmark
 Scripts to benchmark the Fermitools on different systems.  
 
-## Requirements
+## Build Requirements
 Zig=0.17
 
 ## Building the software
