@@ -71,6 +71,7 @@ const Config = struct {
     // Exposure map parameters (all-sky)
     exp_nxpix: u32 = 1800,
     exp_nypix: u32 = 900,
+    exp_evttype: []const u8 = "INDEF",
 
     /// Get the full path to a file in the data directory
     pub fn getDataPath(self: Config, allocator: mem.Allocator, filename: []const u8) ![]const u8 {
@@ -426,7 +427,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
         .name = "gtexpcube2 - Compute exposure map",
         .command = try fmt.allocPrint(allocator,
             \\gtexpcube2 infile={s} cmap=none \
-            \\  outfile={s} irfs={s} \
+            \\  outfile={s} irfs={s} evtype={s} \
             \\  nxpix={} nypix={} binsz={d:.2} \
             \\  coordsys={s} xref={d:.4} yref={d:.4} \
             \\  axisrot=0 proj={s} \
@@ -435,6 +436,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
             config.ltcube_file,
             config.expcube_file,
             config.irfs,
+            config.exp_evttype,
             config.exp_nxpix,
             config.exp_nypix,
             config.binsz,
