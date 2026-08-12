@@ -3,6 +3,7 @@
 // Tutorial: https://fermi.gsfc.nasa.gov/ssc/data/analysis/scitools/binned_likelihood_tutorial.html
 
 const std = @import("std");
+const builtin = @import("builtin");
 const fs = std.fs;
 const process = std.process;
 const mem = std.mem;
@@ -494,14 +495,17 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 /// Execute a shell command and return its result.
 fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u8) CommandResult {
     const start_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
-    const argv: []const []const u8 = &.{
-        "/usr/bin/time",
-        "-f",
-        "\n__FTBENCH_MAX_RSS_KB__=%M",
-        "/bin/sh",
-        "-c",
-        command,
-    };
+    const argv: []const []const u8 = if (builtin.os.tag == .macos)
+        &.{ "/usr/bin/time", "-l", "/bin/sh", "-c", command }
+    else
+        &.{
+            "/usr/bin/time",
+            "-f",
+            "\n__FTBENCH_MAX_RSS_KB__=%M",
+            "/bin/sh",
+            "-c",
+            command,
+        };
 
     const result = std.process.run(allocator, app_io, .{ .argv = argv }) catch |err| {
         const end_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
@@ -525,12 +529,16 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
         else => 255,
     };
 
-    const memory_marker = "__FTBENCH_MAX_RSS_KB__=";
+    const memory_marker = if (builtin.os.tag == .macos)
+        "maximum resident set size (kbytes):"
+    else
+        "__FTBENCH_MAX_RSS_KB__=";
     const marker_start = mem.lastIndexOf(u8, result.stderr, memory_marker);
     const peak_rss_kb = if (marker_start) |start| blk: {
         const value_start = start + memory_marker.len;
         const value_end = mem.indexOfScalarPos(u8, result.stderr, value_start, '\n') orelse result.stderr.len;
-        break :blk fmt.parseInt(u64, result.stderr[value_start..value_end], 10) catch null;
+        const value = mem.trim(u8, result.stderr[value_start..value_end], " \t\r\n");
+        break :blk fmt.parseInt(u64, value, 10) catch null;
     } else null;
     const stderr_size = if (marker_start) |start| blk: {
         const content_start = if (start > 0 and result.stderr[start - 1] == '\n') start - 1 else start;
