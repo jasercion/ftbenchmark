@@ -41,7 +41,7 @@ const Config = struct {
     ltcube_file: []const u8 = "3C279_binned_ltcube.fits",
     expcube_file: []const u8 = "3C279_binned_allsky_expcube.fits",
     srcmaps_file: []const u8 = "3C279_binned_srcmaps.fits",
-    input_model: []const u8 = "data/3C279_input_model.xml",
+    input_model: []const u8 = "3C279_input_model.xml",
     output_model: []const u8 = "3C279_binned_output.xml",
     catalog_file: []const u8 = "gll_psc_v32.xml",
 
@@ -288,6 +288,9 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
     const catalog_path = try config.getDataPath(allocator, config.catalog_file);
     defer allocator.free(catalog_path);
 
+    const inputmodel_path = try config.getDataPath(allocator, config.input_model);
+    defer allocator.free(inputmodel_path);
+
     // 1. Create events list file (if needed)
     // Use the data path for finding photon files
     if (mem.eql(u8, config.data_path, ".")) {
@@ -463,7 +466,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
         , .{
             config.ltcube_file,
             config.ccube_file,
-            config.input_model,
+            inputmodel_path,
             config.expcube_file,
             config.srcmaps_file,
         }),
@@ -486,7 +489,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
             config.srcmaps_file,
             config.expcube_file,
             config.ltcube_file,
-            config.input_model,
+            inputmodel_path,
             config.output_model,
         }),
     });
