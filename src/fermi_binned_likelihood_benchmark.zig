@@ -3,6 +3,7 @@
 // Tutorial: https://fermi.gsfc.nasa.gov/ssc/data/analysis/scitools/binned_likelihood_tutorial.html
 
 const std = @import("std");
+const builtin = @import("builtin");
 const fs = std.fs;
 const process = std.process;
 const mem = std.mem;
@@ -19,6 +20,7 @@ const CommandResult = struct {
     duration_ns: i128,
     stdout_size: usize,
     stderr_size: usize,
+    peak_rss_kb: ?u64,
     success: bool,
     error_message: ?[]const u8,
 };
@@ -69,6 +71,7 @@ const Config = struct {
     // Exposure map parameters (all-sky)
     exp_nxpix: u32 = 1800,
     exp_nypix: u32 = 900,
+    exp_evttype: []const u8 = "INDEF",
 
     /// Get the full path to a file in the data directory
     pub fn getDataPath(self: Config, allocator: mem.Allocator, filename: []const u8) ![]const u8 {
@@ -204,6 +207,11 @@ pub fn main(init: process.Init) !void {
         } else {
             try stdout.interface.print("  ✗ Failed: {s}\n", .{result.error_message orelse "Unknown error"});
         }
+        if (result.peak_rss_kb) |rss_kb| {
+            try stdout.interface.print("  Peak memory: {} KiB ({d:.2} MiB)\n", .{ rss_kb, @as(f64, @floatFromInt(rss_kb)) / 1024.0 });
+        } else {
+            try stdout.interface.print("  Peak memory: unavailable\n", .{});
+        }
     }
 
     const total_end: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
@@ -279,6 +287,9 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 
     const catalog_path = try config.getDataPath(allocator, config.catalog_file);
     defer allocator.free(catalog_path);
+
+    const inputmodel_path = try config.getDataPath(allocator, config.input_model);
+    defer allocator.free(inputmodel_path);
 
     // 1. Create events list file (if needed)
     // Use the data path for finding photon files
@@ -419,7 +430,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
         .name = "gtexpcube2 - Compute exposure map",
         .command = try fmt.allocPrint(allocator,
             \\gtexpcube2 infile={s} cmap=none \
-            \\  outfile={s} irfs={s} \
+            \\  outfile={s} irfs={s} evtype={s} \
             \\  nxpix={} nypix={} binsz={d:.2} \
             \\  coordsys={s} xref={d:.4} yref={d:.4} \
             \\  axisrot=0 proj={s} \
@@ -428,6 +439,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
             config.ltcube_file,
             config.expcube_file,
             config.irfs,
+            config.exp_evttype,
             config.exp_nxpix,
             config.exp_nypix,
             config.binsz,
@@ -454,7 +466,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
         , .{
             config.ltcube_file,
             config.ccube_file,
-            config.input_model,
+            inputmodel_path,
             config.expcube_file,
             config.srcmaps_file,
         }),
@@ -477,7 +489,7 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
             config.srcmaps_file,
             config.expcube_file,
             config.ltcube_file,
-            config.input_model,
+            inputmodel_path,
             config.output_model,
         }),
     });
@@ -488,7 +500,17 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 /// Execute a shell command and return its result.
 fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u8) CommandResult {
     const start_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
-    const argv: []const []const u8 = &.{ "/bin/sh", "-c", command };
+    const argv: []const []const u8 = if (builtin.os.tag == .macos)
+        &.{ "/usr/bin/time", "-l", "/bin/sh", "-c", command }
+    else
+        &.{
+            "/usr/bin/time",
+            "-f",
+            "\n__FTBENCH_MAX_RSS_KB__=%M",
+            "/bin/sh",
+            "-c",
+            command,
+        };
 
     const result = std.process.run(allocator, app_io, .{ .argv = argv }) catch |err| {
         const end_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
@@ -499,6 +521,7 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
             .duration_ns = end_time - start_time,
             .stdout_size = 0,
             .stderr_size = 0,
+            .peak_rss_kb = null,
             .success = false,
             .error_message = @errorName(err),
         };
@@ -511,13 +534,31 @@ fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u
         else => 255,
     };
 
+    const memory_marker = if (builtin.os.tag == .macos)
+        "maximum resident set size (kbytes):"
+    else
+        "__FTBENCH_MAX_RSS_KB__=";
+    const marker_start = mem.lastIndexOf(u8, result.stderr, memory_marker);
+    const peak_rss_kb = if (marker_start) |start| blk: {
+        const value_start = start + memory_marker.len;
+        const value_end = mem.indexOfScalarPos(u8, result.stderr, value_start, '\n') orelse result.stderr.len;
+        const value = mem.trim(u8, result.stderr[value_start..value_end], " \t\r\n");
+        break :blk fmt.parseInt(u64, value, 10) catch null;
+    } else null;
+    const stderr_size = if (marker_start) |start| blk: {
+        const content_start = if (start > 0 and result.stderr[start - 1] == '\n') start - 1 else start;
+        const marker_end = mem.indexOfScalarPos(u8, result.stderr, content_start, '\n') orelse result.stderr.len;
+        break :blk result.stderr.len - (marker_end - content_start);
+    } else result.stderr.len;
+
     const command_result = CommandResult{
         .name = name,
         .command = command,
         .exit_code = exit_code,
         .duration_ns = end_time - start_time,
         .stdout_size = result.stdout.len,
-        .stderr_size = result.stderr.len,
+        .stderr_size = stderr_size,
+        .peak_rss_kb = peak_rss_kb,
         .success = exit_code == 0,
         .error_message = if (exit_code != 0) "Non-zero exit code" else null,
     };
@@ -601,6 +642,7 @@ fn createDryRunResult(name: []const u8, command: []const u8) CommandResult {
         .duration_ns = 0,
         .stdout_size = 0,
         .stderr_size = 0,
+        .peak_rss_kb = null,
         .success = true,
         .error_message = null,
     };
@@ -688,6 +730,12 @@ fn writeResults(
             result.stderr_size,
             result.command,
         });
+
+        if (result.peak_rss_kb) |rss_kb| {
+            try writer.interface.print("  Peak Memory: {} KiB ({d:.2} MiB)\n", .{ rss_kb, @as(f64, @floatFromInt(rss_kb)) / 1024.0 });
+        } else {
+            try writer.interface.print("  Peak Memory: unavailable\n", .{});
+        }
 
         if (result.error_message) |msg| {
             try writer.interface.print("  Error:       {s}\n", .{msg});
