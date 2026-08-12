@@ -11,6 +11,7 @@ const fmt = std.fmt;
 const http = std.http;
 
 var app_io: std.Io = undefined;
+var app_environ_map: *const process.Environ.Map = undefined;
 
 /// Represents the result of a single command execution
 const CommandResult = struct {
@@ -85,6 +86,7 @@ const Config = struct {
 /// Main benchmark runner
 pub fn main(init: process.Init) !void {
     app_io = init.io;
+    app_environ_map = init.environ_map;
     var allocator_state = std.heap.SafeAllocator.init(std.heap.page_allocator, .{});
     defer _ = allocator_state.deinit();
     const allocator = allocator_state.allocator();
@@ -500,11 +502,29 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
 /// Execute a shell command and return its result.
 fn executeCommand(allocator: mem.Allocator, name: []const u8, command: []const u8) CommandResult {
     const start_time: i128 = @intCast(std.Io.Clock.now(.awake, app_io).nanoseconds);
+    const system_time_available = blk: {
+        std.Io.Dir.cwd().access(app_io, "/usr/bin/time", .{}) catch break :blk false;
+        break :blk true;
+    };
+    var conda_time_path: ?[]u8 = null;
+    defer if (conda_time_path) |path| allocator.free(path);
+    const time_path = if (system_time_available)
+        "/usr/bin/time"
+    else if (app_environ_map.get("CONDA_PREFIX")) |conda_prefix| blk: {
+        const path = fmt.allocPrint(allocator, "{s}/bin/time", .{conda_prefix}) catch break :blk "/usr/bin/time";
+        std.Io.Dir.cwd().access(app_io, path, .{}) catch {
+            allocator.free(path);
+            break :blk "/usr/bin/time";
+        };
+        conda_time_path = path;
+        break :blk path;
+    } else "/usr/bin/time";
+
     const argv: []const []const u8 = if (builtin.os.tag == .macos)
-        &.{ "/usr/bin/time", "-l", "/bin/sh", "-c", command }
+        &.{ time_path, "-l", "/bin/sh", "-c", command }
     else
         &.{
-            "/usr/bin/time",
+            time_path,
             "-f",
             "\n__FTBENCH_MAX_RSS_KB__=%M",
             "/bin/sh",
