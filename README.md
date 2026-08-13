@@ -4,6 +4,9 @@ Scripts to benchmark the Fermitools on different systems.
 ## Build Requirements
 Zig=0.17
 
+## Run Requirements
+`time` utility accessible in `/usr/bin/time` or installed via conda: `conda install time` 
+
 ## Building the software
 Clone the repository and run `zig build` in the top level directory.  The `fermi_benchmark` executable will be generated in the `zig-out/bin` directory.
 
