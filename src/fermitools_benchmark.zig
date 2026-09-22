@@ -37,6 +37,7 @@ pub const Config = struct {
 
     // Data file names
     data_url: []const u8 = "https://fermi.gsfc.nasa.gov/ssc/data/analysis/scitools/data/BinnedLikelihood/",
+    catalog_url: []const u8 = "https://fermi.gsfc.nasa.gov/ssc/data/access/lat/14yr_catalog/",
     spacecraft_file: []const u8 = "L181126210218F4F0ED2738_SC00.fits",
     events_list: []const u8 = "binned_events.txt",
     filtered_file: []const u8 = "3C279_binned_filtered.fits",
@@ -413,9 +414,11 @@ fn downloadMissingDataFiles(config: *Config, allocator: mem.Allocator) !void {
         if (!file_exists) {
             std.debug.print("Downloading missing file: {s}\n", .{filename});
 
-            const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ config.data_url, filename });
+            const url = if (std.mem.eql(u8, filename, config.catalog_file))
+                try std.fmt.allocPrint(allocator, "{s}{s}", .{ config.catalog_url, filename })
+            else
+                try std.fmt.allocPrint(allocator, "{s}{s}", .{ config.data_url, filename });
             defer allocator.free(url);
-
             try downloadFile(allocator, url, local_path);
 
             std.debug.print("Successfully downloaded: {s}\n", .{filename});
