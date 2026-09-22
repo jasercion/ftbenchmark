@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
 
     // Main executable
     const root_module = b.createModule(.{
-        .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
+        .root_source_file = b.path("src/fermitools_benchmark.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = false,
@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
 
     // Unit tests
     const test_module = b.createModule(.{
-        .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
+        .root_source_file = b.path("src/fermitools_benchmark.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) void {
 
     // Documentation generation
     const docs_module = b.createModule(.{
-        .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
+        .root_source_file = b.path("src/fermitools_benchmark.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -94,7 +94,7 @@ pub fn build(b: *std.Build) void {
 
     // Check step (compile without producing output - useful for CI)
     const check_module = b.createModule(.{
-        .root_source_file = b.path("src/fermi_binned_likelihood_benchmark.zig"),
+        .root_source_file = b.path("src/fermitools_benchmark.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -110,7 +110,7 @@ pub fn build(b: *std.Build) void {
     // Add format check step
     const fmt = b.addFmt(.{
         .paths = &.{
-            b.path("src/fermi_binned_likelihood_benchmark.zig"),
+            b.path("src/fermitools_benchmark.zig"),
             b.path("build.zig"),
         },
         .check = true,
@@ -122,7 +122,7 @@ pub fn build(b: *std.Build) void {
     // Add format fix step
     const fmt_fix = b.addFmt(.{
         .paths = &.{
-            b.path("src/fermi_binned_likelihood_benchmark.zig"),
+            b.path("src/fermitools_benchmark.zig"),
             b.path("build.zig"),
         },
         .check = false,
