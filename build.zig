@@ -111,6 +111,8 @@ pub fn build(b: *std.Build) void {
     const fmt = b.addFmt(.{
         .paths = &.{
             b.path("src/fermitools_benchmark.zig"),
+            b.path("src/binned_likelihood.zig"),
+            b.path("src/bex_fermi.zig"),
             b.path("build.zig"),
         },
         .check = true,
@@ -123,6 +125,8 @@ pub fn build(b: *std.Build) void {
     const fmt_fix = b.addFmt(.{
         .paths = &.{
             b.path("src/fermitools_benchmark.zig"),
+            b.path("src/binned_likelihood.zig"),
+            b.path("src/bex_fermi.zig"),
             b.path("build.zig"),
         },
         .check = false,

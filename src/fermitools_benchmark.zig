@@ -10,8 +10,23 @@ const mem = std.mem;
 const fmt = std.fmt;
 const http = std.http;
 
-const command_sets = .{
-    @import("binned_likelihood.zig"),
+pub const Subtest = struct {
+    name: []const u8,
+    description: []const u8,
+    appendCommands: *const fn (allocator: mem.Allocator, commands: *std.array_list.Managed(CommandDef), config: Config) anyerror!void,
+};
+
+pub const available_subtests = [_]Subtest{
+    .{
+        .name = "binned_likelihood",
+        .description = "Fermi LAT Binned Likelihood Tutorial",
+        .appendCommands = @import("binned_likelihood.zig").appendCommands,
+    },
+    .{
+        .name = "bex_fermi",
+        .description = "Fermi LAT BEX Aperture Photometry & Probability Analysis",
+        .appendCommands = @import("bex_fermi.zig").appendCommands,
+    },
 };
 
 var app_io: std.Io = undefined;
@@ -108,6 +123,8 @@ pub fn main(init: process.Init) !void {
     var dry_run = false;
     var verbose = false;
     var data_path: []const u8 = ".";
+    var selected_subtests = std.array_list.Managed([]const u8).init(allocator);
+    defer selected_subtests.deinit();
 
     var i: usize = 1;
     while (i < args.items.len) : (i += 1) {
@@ -121,12 +138,45 @@ pub fn main(init: process.Init) !void {
             if (i < args.items.len) {
                 data_path = args.items[i];
             }
+        } else if (mem.eql(u8, args.items[i], "--subtest") or
+            mem.eql(u8, args.items[i], "--subtests") or
+            mem.eql(u8, args.items[i], "-s") or
+            mem.eql(u8, args.items[i], "--test") or
+            mem.eql(u8, args.items[i], "--tests") or
+            mem.eql(u8, args.items[i], "-t") or
+            mem.eql(u8, args.items[i], "--suite") or
+            mem.eql(u8, args.items[i], "--suites"))
+        {
+            i += 1;
+            if (i < args.items.len) {
+                var iterator = mem.tokenizeScalar(u8, args.items[i], ',');
+                while (iterator.next()) |sub_item| {
+                    const trimmed = mem.trim(u8, sub_item, " \t\r\n");
+                    if (trimmed.len > 0) {
+                        try selected_subtests.append(trimmed);
+                    }
+                }
+            }
         } else if (mem.eql(u8, args.items[i], "--dry-run")) {
             dry_run = true;
         } else if (mem.eql(u8, args.items[i], "--verbose") or mem.eql(u8, args.items[i], "-v")) {
             verbose = true;
         } else if (mem.eql(u8, args.items[i], "--help") or mem.eql(u8, args.items[i], "-h")) {
             try printUsage();
+            return;
+        }
+    }
+
+    // Validate selected subtests
+    for (selected_subtests.items) |subtest_name| {
+        if (!isValidSubtestName(subtest_name)) {
+            var buffer: [4096]u8 = undefined;
+            var stderr = std.Io.File.stderr().writer(app_io, &buffer);
+            try stderr.interface.print("Error: Unknown subtest '{s}'. Available subtests:\n", .{subtest_name});
+            for (available_subtests) |avail| {
+                try stderr.interface.print("  - {s}: {s}\n", .{ avail.name, avail.description });
+            }
+            try stderr.interface.flush();
             return;
         }
     }
@@ -158,11 +208,28 @@ pub fn main(init: process.Init) !void {
 
     try stdout.interface.print(
         \\===============================================================
-        \\  Fermi LAT Binned Likelihood Tutorial - Benchmark Runner
+        \\  Fermi LAT Benchmark Runner
         \\===============================================================
         \\
         \\Configuration:
         \\  Data Path: {s}
+        \\  Subtests:  
+    , .{config.data_path});
+    if (selected_subtests.items.len == 0) {
+        try stdout.interface.print("all (", .{});
+        for (available_subtests, 0..) |st, idx| {
+            if (idx > 0) try stdout.interface.print(", ", .{});
+            try stdout.interface.print("{s}", .{st.name});
+        }
+        try stdout.interface.print(")\n", .{});
+    } else {
+        for (selected_subtests.items, 0..) |st, idx| {
+            if (idx > 0) try stdout.interface.print(", ", .{});
+            try stdout.interface.print("{s}", .{st});
+        }
+        try stdout.interface.print("\n", .{});
+    }
+    try stdout.interface.print(
         \\  RA: {d:.2}, DEC: {d:.2}, Radius: {d:.1} deg
         \\  Energy: {d:.0} - {d:.0} MeV
         \\  IRFs: {s}
@@ -171,7 +238,6 @@ pub fn main(init: process.Init) !void {
         \\
         \\
     , .{
-        config.data_path,
         config.ra,
         config.dec,
         config.radius,
@@ -184,7 +250,7 @@ pub fn main(init: process.Init) !void {
     try stdout.interface.flush();
 
     // Build all commands
-    const commands = try buildCommands(allocator, config);
+    const commands = try buildCommands(allocator, config, selected_subtests.items);
     defer {
         for (commands) |cmd| {
             allocator.free(cmd.command);
@@ -253,16 +319,21 @@ fn printUsage() !void {
     var buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(app_io, &buffer);
     try stdout.interface.print(
-        \\Fermi LAT Binned Likelihood Tutorial - Benchmark Runner
+        \\Fermi LAT Benchmark Runner
         \\
         \\Usage: fermi_benchmark [OPTIONS]
         \\
         \\Options:
-        \\  -d, --data-path <DIR> Directory containing input data files (default: current directory)
-        \\  -o, --output <FILE>   Output file for benchmark results (default: benchmark_results.txt)
-        \\  --dry-run             Print commands without executing them
-        \\  -v, --verbose         Show detailed command output
-        \\  -h, --help            Show this help message
+        \\  -d, --data-path <DIR>    Directory containing input data files (default: current directory)
+        \\  -o, --output <FILE>      Output file for benchmark results (default: benchmark_results.txt)
+        \\  -s, --subtest <NAMES>    Select subtest(s) to run (e.g. binned_likelihood, bex_fermi, or comma-separated; default: all)
+        \\  --dry-run                Print commands without executing them
+        \\  -v, --verbose            Show detailed command output
+        \\  -h, --help               Show this help message
+        \\
+        \\Available Subtests:
+        \\  binned_likelihood        Fermi LAT Binned Likelihood Tutorial
+        \\  bex_fermi                Fermi LAT BEX Aperture Photometry & Probability Analysis
         \\
         \\Requirements:
         \\  - Fermitools must be installed and configured
@@ -273,9 +344,38 @@ fn printUsage() !void {
         \\
         \\Example:
         \\  fermi_benchmark --data-path /path/to/fermi/data --output results.txt
-        \\  fermi_benchmark -d ~/fermi_data -v --dry-run
+        \\  fermi_benchmark -d ~/fermi_data -s binned_likelihood -v --dry-run
+        \\  fermi_benchmark -s binned_likelihood,bex_fermi --dry-run
         \\
     , .{});
+}
+
+/// Helper to match subtest names case-insensitively and treating '_' and '-' interchangeably
+pub fn matchSubtestName(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ca, cb| {
+        const norm_a = if (ca == '-') '_' else std.ascii.toLower(ca);
+        const norm_b = if (cb == '-') '_' else std.ascii.toLower(cb);
+        if (norm_a != norm_b) return false;
+    }
+    return true;
+}
+
+/// Check if a subtest name is recognized among available subtests
+pub fn isValidSubtestName(name: []const u8) bool {
+    for (available_subtests) |avail| {
+        if (matchSubtestName(avail.name, name)) return true;
+    }
+    return false;
+}
+
+/// Check if a given subtest is selected by the user
+pub fn isSubtestSelected(name: []const u8, selected: []const []const u8) bool {
+    if (selected.len == 0) return true;
+    for (selected) |sel| {
+        if (matchSubtestName(name, sel)) return true;
+    }
+    return false;
 }
 
 /// Command definition for building shell commands
@@ -284,12 +384,12 @@ pub const CommandDef = struct {
     command: []const u8,
 };
 
-/// Build all analysis commands based on registered command-set modules.
+/// Build analysis commands based on registered subtest modules and user selection.
+/// If `selected_subtests` is empty, all registered subtests are included.
 ///
-/// Additional command sets can be added as their own files in `src` by exposing:
-///
+/// Additional subtests can be added in `available_subtests` by exposing:
 /// `pub fn appendCommands(allocator: mem.Allocator, commands: *std.array_list.Managed(CommandDef), config: Config) !void`
-fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
+pub fn buildCommands(allocator: mem.Allocator, config: Config, selected_subtests: []const []const u8) ![]CommandDef {
     var commands = std.array_list.Managed(CommandDef).init(allocator);
     errdefer {
         for (commands.items) |cmd| {
@@ -298,8 +398,10 @@ fn buildCommands(allocator: mem.Allocator, config: Config) ![]CommandDef {
         commands.deinit();
     }
 
-    inline for (command_sets) |command_set| {
-        try command_set.appendCommands(allocator, &commands, config);
+    for (available_subtests) |subtest| {
+        if (isSubtestSelected(subtest.name, selected_subtests)) {
+            try subtest.appendCommands(allocator, &commands, config);
+        }
     }
 
     return commands.toOwnedSlice();
@@ -655,11 +757,11 @@ fn countSuccessful(results: []const CommandResult) usize {
     return count;
 }
 
-test "command building" {
+test "command building all subtests" {
     const allocator = std.testing.allocator;
     const config = Config{};
 
-    const commands = try buildCommands(allocator, config);
+    const commands = try buildCommands(allocator, config, &.{});
     defer {
         for (commands) |cmd| {
             allocator.free(cmd.command);
@@ -667,7 +769,57 @@ test "command building" {
         allocator.free(commands);
     }
 
-    try std.testing.expect(commands.len == 9);
+    // 9 commands from binned_likelihood + 7 commands from bex_fermi = 16
+    try std.testing.expectEqual(@as(usize, 16), commands.len);
+}
+
+test "command building binned_likelihood only" {
+    const allocator = std.testing.allocator;
+    const config = Config{};
+
+    const commands = try buildCommands(allocator, config, &.{"binned_likelihood"});
+    defer {
+        for (commands) |cmd| {
+            allocator.free(cmd.command);
+        }
+        allocator.free(commands);
+    }
+
+    try std.testing.expectEqual(@as(usize, 9), commands.len);
+}
+
+test "command building bex_fermi only" {
+    const allocator = std.testing.allocator;
+    const config = Config{};
+
+    const commands = try buildCommands(allocator, config, &.{"bex_fermi"});
+    defer {
+        for (commands) |cmd| {
+            allocator.free(cmd.command);
+        }
+        allocator.free(commands);
+    }
+
+    try std.testing.expectEqual(@as(usize, 7), commands.len);
+}
+
+test "subtest name matching" {
+    try std.testing.expect(matchSubtestName("binned_likelihood", "binned_likelihood"));
+    try std.testing.expect(matchSubtestName("binned_likelihood", "binned-likelihood"));
+    try std.testing.expect(matchSubtestName("binned_likelihood", "BINNED_LIKELIHOOD"));
+    try std.testing.expect(matchSubtestName("bex_fermi", "bex-fermi"));
+    try std.testing.expect(matchSubtestName("bex_fermi", "BEX_FERMI"));
+    try std.testing.expect(!matchSubtestName("binned_likelihood", "bex_fermi"));
+
+    try std.testing.expect(isValidSubtestName("binned_likelihood"));
+    try std.testing.expect(isValidSubtestName("bex_fermi"));
+    try std.testing.expect(!isValidSubtestName("unknown_subtest"));
+
+    try std.testing.expect(isSubtestSelected("binned_likelihood", &.{}));
+    try std.testing.expect(isSubtestSelected("binned_likelihood", &.{"binned_likelihood"}));
+    try std.testing.expect(isSubtestSelected("binned_likelihood", &.{"binned-likelihood"}));
+    try std.testing.expect(!isSubtestSelected("binned_likelihood", &.{"bex_fermi"}));
+    try std.testing.expect(isSubtestSelected("binned_likelihood", &.{ "bex_fermi", "binned_likelihood" }));
 }
 
 test "config getDataPath" {
